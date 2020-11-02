@@ -1,6 +1,10 @@
 import logging
 import sys
 
+import time
+from datetime import datetime
+from dateutil import (parser, tz)
+
 _LOGGER = logging.getLogger(__name__)
 
 #: Running under Python 3
@@ -9,7 +13,100 @@ PY3K = sys.version_info[0] == 3
 #: Running under Python 2.7, or newer
 PY27 = sys.version_info[:2] >= (2, 7)
 
-now_time = lambda:int(round(t * 1000))
+now_time = lambda:int(round(time.time() * 1000))
+
+GITHUB_DATE_FORMAT = "%Y/%m/%d %H:%M:%S %z"
+# We need to manually mangle the timezone for commit date formatting because it
+# uses -xx:xx format
+COMMIT_DATE_FORMAT = "%Y-%m-%dT%H:%M:%S"
+#: GitHub timezone used in API output
+GITHUB_TZ = tz.gettz("America/Los_Angeles")
+
+def string_to_datetime(string):
+    """Convert a string to Python datetime.
+
+    :param str github_date: date string to parse
+
+    """
+    parsed = parser.parse(string)
+    if NAIVE:
+        parsed = parsed.replace(tzinfo=None)
+    return parsed
+
+
+def _handle_naive_datetimes(f):
+    """Decorator to make datetime arguments use GitHub timezone.
+
+    :param func f: Function to wrap
+
+    """
+    def wrapper(datetime_):
+        if not datetime_.tzinfo:
+            datetime_ = datetime_.replace(tzinfo=GITHUB_TZ)
+        else:
+            datetime_ = datetime_.astimezone(GITHUB_TZ)
+        return f(datetime_)
+    wrapped = wrapper
+    wrapped.__name__ = f.__name__
+    wrapped.__doc__ = (
+        f.__doc__
+        + """\n    .. note:: Supports naive and timezone-aware datetimes"""
+    )
+    return wrapped
+
+
+@_handle_naive_datetimes
+def datetime_to_ghdate(datetime_):
+    """Convert Python datetime to GitHub date string.
+
+    :param datetime datetime_: datetime object to convert
+
+    """
+    return datetime_.strftime(GITHUB_DATE_FORMAT)
+
+
+@_handle_naive_datetimes
+def datetime_to_commitdate(datetime_):
+    """Convert Python datetime to GitHub date string.
+
+    :param datetime datetime_: datetime object to convert
+
+    """
+    date_without_tz = datetime_.strftime(COMMIT_DATE_FORMAT)
+    utcoffset = GITHUB_TZ.utcoffset(datetime_)
+    hours, minutes = divmod(utcoffset.days * 86400 + utcoffset.seconds, 3600)
+
+    return "".join([date_without_tz, "%+03d:%02d" % (hours, minutes)])
+
+
+def datetime_to_isodate(datetime_):
+    """Convert Python datetime to GitHub date string.
+
+    :param str datetime_: datetime object to convert
+
+    .. note:: Supports naive and timezone-aware datetimes
+    """
+    if not datetime_.tzinfo:
+        datetime_ = datetime_.replace(tzinfo=tz.tzutc())
+    else:
+        datetime_ = datetime_.astimezone(tz.tzutc())
+    return "%sZ" % datetime_.isoformat()[:-6]
+
+def doc_generator(docstring, attributes):
+    """Utility function to augment BaseDataType docstring.
+
+    :param str docstring: docstring to augment
+    :param dict attributes: attributes to add to docstring
+
+    """
+    docstring = docstring or ""
+
+    def bullet(title, text):
+        return """.. attribute:: %s\n\n   %s\n""" % (title, text)
+
+    b = "\n".join([bullet(attr_name, attr.help)
+                   for attr_name, attr in attributes.items()])
+    return "\n\n".join([docstring, b])
 
 class Attribute(object):
 
@@ -141,6 +238,7 @@ class QingPingCommand(object):
         """
         filter = kwargs.get("filter")
         post_data = kwargs.get("post_data") or {}
+        query_data = kwargs.get("query_data") or {}
         page = kwargs.pop("page", 1)
         if page and not page == 1:
             post_data["page"] = page
@@ -155,7 +253,8 @@ class QingPingCommand(object):
             response = self.request.delete(self.domain, command, *args,
                                            **post_data)
         else:
-            response = self.request.get(self.domain, command, *args)
+            response = self.request.get(self.domain, command, *args,
+                                           **query_data)
         if filter:
             return response[filter]
         return response

@@ -68,6 +68,8 @@ class QingPingRequest(object):
     def __init__(self, app_key, app_secret, requests_per_second=None, url_prefix=None, cache=None):
         self.app_key = app_key
         self.app_secret = app_secret
+        self.delay = 0
+
         self.qingping_url = DEFAULT_QINGPING_URL
         self.url_prefix = url_prefix
 
@@ -99,9 +101,9 @@ class QingPingRequest(object):
 
         return urlencode(post_data)
 
-    def get(self, *path_components):
+    def get(self, *path_components, **extra_query_data):
         path_components = filter(None, path_components)
-        return self.make_request("/".join(path_components))
+        return self.make_request("/".join(path_components), extra_query_data=extra_query_data)
 
     def post(self, *path_components, **extra_post_data):
         path_components = filter(None, path_components)
@@ -118,23 +120,23 @@ class QingPingRequest(object):
         return self.make_request("/".join(path_components), extra_post_data,
             method="DELETE")
 
-    def make_request(self, path, extra_post_data=None, method="GET"):
+    def make_request(self, path, extra_post_data=None, method="GET", extra_query_data=None):
         if self.delay:
             since_last = (datetime.datetime.utcnow() - self.last_request)
             if since_last.days == 0 and since_last.seconds < self.delay:
                 duration = self.delay - since_last.seconds
-                LOGGER.warning("delaying API call %g second(s)", duration)
+                _LOGGER.warning("delaying API call %g second(s)", duration)
                 time.sleep(duration)
 
         extra_post_data = extra_post_data or {}
         url = "/".join([self.url_prefix, quote(path)])
-        result = self.raw_request(url, extra_post_data, method=method)
+        result = self.raw_request(url, extra_post_data, method=method, extra_query_data=extra_query_data)
 
         if self.delay:
             self.last_request = datetime.datetime.utcnow()
         return result
 
-    def raw_request(self, url, extra_post_data, method="GET"):
+    def raw_request(self, url, extra_post_data, method="GET", extra_query_data=None):
         scheme, netloc, path, query, fragment = urlsplit(url)
         post_data = None
         headers = self.http_headers.copy()
@@ -149,12 +151,19 @@ class QingPingRequest(object):
             post_data = self.encode_authentication_data(extra_post_data)
             headers["Content-Length"] = str(len(post_data))
         else:
-            query = self.encode_authentication_data(parse_qs(query))
+            print(extra_query_data)
+            if extra_query_data and method == "GET":
+                query = parse_qs(query)
+                query.update(extra_query_data)
+            query = self.encode_authentication_data(query)
+            print(query)
         url = urlunsplit((scheme, netloc, path, query, fragment))
+        print(url)
+        print(headers)
+        print(post_data)
         response, content = self._http.request(url, method, post_data, headers)
-        if LOGGER.isEnabledFor(logging.DEBUG):
-            logging.debug("URL: %r POST_DATA: %r RESPONSE_TEXT: %r", url,
-                          post_data, content)
+        _LOGGER.debug("URL: %r POST_DATA: %r RESPONSE_TEXT: %r", url,
+                      post_data, content)
         if response.status >= 400:
             raise HttpError("Unexpected response from cleargrass.com %d: %r"
                             % (response.status, content), content,
